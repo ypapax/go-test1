@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -9,16 +10,22 @@ import (
 	"strconv"
 )
 
+const qcSuffix = "_qc"
+const dateField = "time"
+
 func main() {
 	url := "http://www.neracoos.org/erddap/tabledap/E05_aanderaa_all.json?station%2Cmooring_site_desc%2Cwater_depth%2Ctime%2Ccurrent_speed%2Ccurrent_speed_qc%2Ccurrent_direction%2Ccurrent_direction_qc%2Ccurrent_u%2Ccurrent_u_qc%2Ccurrent_v%2Ccurrent_v_qc%2Ctemperature%2Ctemperature_qc%2Cconductivity%2Cconductivity_qc%2Csalinity%2Csalinity_qc%2Csigma_t%2Csigma_t_qc%2Ctime_created%2Ctime_modified%2Clongitude%2Clatitude%2Cdepth&time%3E=2015-08-25T15%3A00%3A00Z&time%3C=2016-12-05T14%3A00%3A00Z"
-	b, err := MinMaxAvg(url)
+	b, err := minMaxAvg(url, "current_speed", "temperature", "salinity")
 	if err != nil {
 		log.Println("error: ", err)
 	}
 	fmt.Println(string(b))
 }
 
-func MinMaxAvg(url string) ([]byte, error) {
+func minMaxAvg(url string, fields ...string) ([]byte, error) {
+	if len(fields) == 0 {
+		return nil, errors.New("at least one field is required")
+	}
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
@@ -34,75 +41,77 @@ func MinMaxAvg(url string) ([]byte, error) {
 	if err := json.Unmarshal(b, &respD); err != nil {
 		return nil, err
 	}
-	var speeds, temperatures, salinities valuesTime
+	columnsMap := make(map[string]int)
+	for i, f := range respD.Table.ColumnNames {
+		columnsMap[f] = i
+	}
+	var values []*valuesTime
+	for _, f := range fields {
+		var vt = valuesTime{column: f}
+		var ok bool
+		vt.index, ok = columnsMap[f]
+		if !ok {
+			return nil, fmt.Errorf("column %+v is not found in response", f)
+		}
+		vt.qcIndex, ok = columnsMap[f+qcSuffix]
+		if !ok {
+			return nil, fmt.Errorf("column %+v is not found in response", f+qcSuffix)
+		}
+		vt.dateIndex, ok = columnsMap[dateField]
+		if !ok {
+			return nil, fmt.Errorf("column %+v is not found in response", dateField)
+		}
+		values = append(values, &vt)
+	}
 	for _, r := range respD.Table.Rows {
-		if len(r) < 18 {
-			return nil, fmt.Errorf("invalid row, not enough elements in the array: %+v", r)
-		}
-
-		speed, err := strconv.ParseFloat(fmt.Sprintf("%+v", r[4]), 64)
-		if err != nil {
-			return nil, err
-		}
-		speed_qc, err := strconv.ParseFloat(fmt.Sprintf("%+v", r[5]), 64)
-		if err != nil {
-			return nil, err
-		}
-		date := fmt.Sprintf("%+v", r[3])
-		if speed_qc != 0 {
-			if len(speeds.start_date) == 0 {
-				speeds.start_date = date
+		for _, o := range values {
+			if len(r) <= o.index || len(r) <= o.qcIndex || len(r) <= o.dateIndex {
+				return nil, fmt.Errorf("invalid row, not enough elements in the array: %+v", r)
 			}
-			speeds.end_date = date
-			speeds.values = append(speeds.values, speed)
-		}
-
-		temperature, err := strconv.ParseFloat(fmt.Sprintf("%+v", r[12]), 64)
-		if err != nil {
-			return nil, err
-		}
-		temperature_qc, err := strconv.ParseFloat(fmt.Sprintf("%+v", r[13]), 64)
-		if err != nil {
-			return nil, err
-		}
-		if temperature_qc != 0 {
-			if len(temperatures.start_date) == 0 {
-				temperatures.start_date = date
+			qc, err := strconv.ParseFloat(fmt.Sprintf("%+v", r[o.qcIndex]), 64)
+			if err != nil {
+				return nil, err
 			}
-			temperatures.end_date = date
-			temperatures.values = append(temperatures.values, temperature)
-		}
-
-		salinity, err := strconv.ParseFloat(fmt.Sprintf("%+v", r[16]), 64)
-		if err != nil {
-			return nil, err
-		}
-		salinity_qc, err := strconv.ParseFloat(fmt.Sprintf("%+v", r[17]), 64)
-		if err != nil {
-			return nil, err
-		}
-		if salinity_qc != 0 {
-			if len(salinities.start_date) == 0 {
-				salinities.start_date = date
+			if qc != 0 {
+				continue
 			}
-			salinities.end_date = date
-			salinities.values = append(salinities.values, salinity)
+			v, err := strconv.ParseFloat(fmt.Sprintf("%+v", r[o.index]), 64)
+			if err != nil {
+				return nil, err
+			}
+			date := fmt.Sprintf("%+v", r[o.dateIndex])
+			if o.count == 0 {
+				o.min = v
+				o.max = v
+			} else {
+				if o.min > v {
+					o.min = v
+				}
+				if o.max < v {
+					o.max = v
+				}
+			}
+			if len(o.start_date) == 0 {
+				o.start_date = date
+			}
+			o.end_date = date // assuming data in rows is sorted: newest data in the end of the array
+			o.count++
+			o.sum += v
 		}
 	}
 	var result = make(map[string]interface{})
-	for k, v := range map[string]valuesTime{
-		"current_speed": speeds,
-		"temperature":   temperatures,
-		"salinity":    salinities,
-	} {
-		min, max, avg := minMaxAvg(v.values)
-		result[k] = map[string]interface{}{
-			"start_date":  v.start_date,
-			"end_date":    v.end_date,
-			"num_records": len(v.values),
-			"min_" + k:    min,
-			"max_" + k:    max,
-			"avg_" + k:    avg,
+	for _, o := range values {
+		var avg float64
+		if o.count != 0 {
+			avg = o.sum / float64(o.count)
+		}
+		result[o.column] = map[string]interface{}{
+			"start_date":      o.start_date,
+			"end_date":        o.end_date,
+			"num_records":     o.count,
+			"min_" + o.column: o.min,
+			"max_" + o.column: o.max,
+			"avg_" + o.column: avg,
 		}
 	}
 	b, err = json.Marshal(result)
@@ -117,28 +126,15 @@ type respData struct {
 }
 
 type table struct {
-	Rows [][]interface{} `json:"rows"`
-}
-
-func minMaxAvg(values []float64) (min, max, avg float64) {
-	var sum float64
-	if len(values) == 0 {
-		return
-	}
-	min = values[0]
-	max = values[0]
-	for _, v := range values {
-		if v < min {
-			v = min
-		} else if v > max {
-			v = max
-		}
-		sum += v
-	}
-	return min, max, sum / float64(len(values))
+	ColumnNames []string        `json:"columnNames"`
+	Rows        [][]interface{} `json:"rows"`
 }
 
 type valuesTime struct {
-	values               []float64
-	start_date, end_date string
+	values                    []float64
+	start_date, end_date      string
+	index, qcIndex, dateIndex int
+	column                    string
+	count                     int
+	min, max, sum             float64
 }
