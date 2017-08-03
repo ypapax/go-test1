@@ -94,7 +94,7 @@ func minMaxAvg(url string, fields ...string) ([]byte, error) {
 			if len(o.start_date) == 0 {
 				o.start_date = date
 			}
-			o.end_date = date // assuming data in rows is sorted: newest data in the end of the array
+			o.end_date = date // assuming data in rows is sorted: newest (with latest time field) data is in the end of the array
 			o.count++
 			o.sum += v
 		}
