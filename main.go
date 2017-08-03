@@ -131,7 +131,6 @@ type table struct {
 }
 
 type valuesTime struct {
-	values                    []float64
 	start_date, end_date      string
 	index, qcIndex, dateIndex int
 	column                    string
