@@ -45,9 +45,9 @@ func minMaxAvg(url string, fields ...string) ([]byte, error) {
 	for i, f := range respD.Table.ColumnNames {
 		columnsMap[f] = i
 	}
-	var values []*valuesTime
+	var values []*aggregation
 	for _, f := range fields {
-		var vt = valuesTime{column: f}
+		var vt = aggregation{column: f}
 		var ok bool
 		vt.index, ok = columnsMap[f]
 		if !ok {
@@ -130,7 +130,7 @@ type table struct {
 	Rows        [][]interface{} `json:"rows"`
 }
 
-type valuesTime struct {
+type aggregation struct {
 	start_date, end_date      string
 	index, qcIndex, dateIndex int
 	column                    string
